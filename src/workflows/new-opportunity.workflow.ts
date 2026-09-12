@@ -1,11 +1,10 @@
-/**
- * Workflow: new_opportunity —— 全新赛道 / 新品机会实验室（V2 §58, 任务 C）
- * AI 拆市场 → 生成研究树 → 采集（可用 mock 派生）→ 数据需求清单 → 机会池
+﻿/**
+ * Workflow: new_opportunity —— 全新赛道 / 新品机会实验室（V2 §58, 任务 C；V2.2 §7 同构）
+ * AI 拆市场 → 生成研究树 → 采集（按能力取 Provider，禁止 Mock）→ 数据需求清单 → 机会池
  * 第一版不要求一次抓完整全 Amazon 数据；数据不足如实输出 needs_data
  */
 import { getDatabase } from '../db/connection.js';
 import { getResearchJob, transitionJob } from '../modules/research/job.js';
-import { getAdapter } from '../adapters/index.js';
 import { normalizeMarketData, normalizeProductData } from '../normalization/engine.js';
 import { upsertMarketNode } from '../modules/snapshots/engine.js';
 import { evaluateHardGates } from '../modules/rules/engine.js';
@@ -13,6 +12,8 @@ import { getActiveRuleProfile } from '../modules/rules/profile.js';
 import { generateInsight } from '../ai/service.js';
 import { addWatchlist, recordDataTask, runStep } from './helpers.js';
 import type { HardGateContext } from '../modules/rules/engine.js';
+import type { MarketResearchProvider } from '../adapters/providers/types.js';
+import { getCapabilityProvider, type WorkflowDataContext } from './context.js';
 
 /** 由自然语言想法确定性拆解市场树（V2 §8.2-8.3） */
 export function buildResearchTree(idea: string): Array<{ name: string; parent: string | null; level: number }> {
@@ -25,12 +26,17 @@ export function buildResearchTree(idea: string): Array<{ name: string; parent: s
   return nodes;
 }
 
-export async function runNewOpportunityWorkflow(jobId: number): Promise<void> {
+/** V2.2：New Opportunity Workflow —— 数据来自 ctx.providers（禁止 getAdapter('mock')） */
+export async function runNewOpportunityWorkflow(jobId: number, ctx: WorkflowDataContext): Promise<void> {
   const db = getDatabase();
   const job = getResearchJob(jobId)!;
   const profile = getActiveRuleProfile('amazon_us_new_product_default_v1') ?? getActiveRuleProfile();
   if (!profile) throw new Error('缺少可用 RuleProfile');
-  const adapter = getAdapter('mock');
+
+  const marketCtx = ctx.providers['market_size'];
+  const topCtx = ctx.providers['top_products'] ?? null;
+  const marketProvider = getCapabilityProvider<MarketResearchProvider>(ctx, 'market_size');
+  const topProductsProvider = topCtx ? (topCtx.impl as MarketResearchProvider) : null;
   const idea = job.target || job.description || 'New Product Idea';
 
   try {
@@ -55,12 +61,12 @@ export async function runNewOpportunityWorkflow(jobId: number): Promise<void> {
 
     transitionJob(jobId, 'collecting');
 
-    // collect_market：根节点概览（mock 派生）
+    // collect_market：根节点概览（market_size 能力，REAL 不 Mock）
     const overview = await runStep(jobId, 'collect_market', async () => {
-      const o = await adapter.fetchMarketOverview({ market_name: idea, marketplace: job.marketplace });
+      const o = await marketProvider.getMarketOverview({ market_name: idea, marketplace: job.marketplace });
       recordDataTask({
         jobId,
-        sourceName: 'mock',
+        sourceName: marketCtx.name,
         taskType: 'collect_market',
         target: idea,
         status: 'success',
@@ -69,11 +75,19 @@ export async function runNewOpportunityWorkflow(jobId: number): Promise<void> {
       return o;
     });
 
+    // collect_products：top_products 为 optional 能力，未解析时如实降级
     const products = await runStep(jobId, 'collect_products', async () => {
-      const top = await adapter.fetchMarketProducts({ market_name: idea, marketplace: job.marketplace }, 30);
+      if (!topProductsProvider) {
+        db.prepare(
+          `INSERT INTO missing_data_items (research_job_id, entity_type, entity_id, field, missing_reason, required_for_decision, manual_validation_required, status, created_at)
+           VALUES (?, 'opportunity', ?, 'top_products', '当前无 TOP 产品 Provider（optional 能力未解析）', 0, 1, 'open', ?)`
+        ).run(jobId, jobId, new Date().toISOString());
+        return [];
+      }
+      const top = await topProductsProvider.getTopProducts({ market_name: idea, marketplace: job.marketplace, limit: 30 });
       recordDataTask({
         jobId,
-        sourceName: 'mock',
+        sourceName: topCtx.name,
         taskType: 'collect_products',
         target: `${idea} TOP30`,
         status: 'partial',
@@ -85,8 +99,8 @@ export async function runNewOpportunityWorkflow(jobId: number): Promise<void> {
     transitionJob(jobId, 'normalizing');
 
     const normalized = await runStep(jobId, 'normalize', () => {
-      const marketId = normalizeMarketData(overview, { is_demo: true, job_id: jobId, entityType: 'market' }).marketId;
-      const productIds = products.map((p) => normalizeProductData(p, { is_demo: true, job_id: jobId, entityType: 'product' }).productId);
+      const marketId = normalizeMarketData(overview, { is_demo: marketCtx.isMock, job_id: jobId, entityType: 'market' }).marketId;
+      const productIds = products.map((p) => normalizeProductData(p, { is_demo: topCtx?.isMock ?? false, job_id: jobId, entityType: 'product' }).productId);
       return { marketId, productIds };
     });
 
@@ -193,3 +207,5 @@ export async function runNewOpportunityWorkflow(jobId: number): Promise<void> {
     throw e;
   }
 }
+
+

@@ -63,6 +63,16 @@ api21.get('/providers/capabilities', (_req, res) => {
   });
 });
 
+// ===== Provider 远程健康检查刷新（V2.2 §15/§28：Connected 仅来自真实 healthCheckRemote）=====
+api21.post('/providers/health/refresh', async (_req, res) => {
+  try {
+    const results = await providerRegistry.refreshAllHealth();
+    res.json({ ok: true, mode: getMode(), results, snapshot: providerRegistry.getHealthSnapshot() });
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
 // ===== 真实导入（P0-1：SellerSprite ReverseASIN 文件）=====
 api21.post('/import/sellersprite/reverse-asin', async (req, res) => {
   const { file_path, marketplace, asin, mode } = (req.body ?? {}) as {

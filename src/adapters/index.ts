@@ -1,6 +1,8 @@
 /**
  * Adapter 注册中心 —— 数据源隔离层（V2 §9）
- * 业务层永远不直接调用第三方数据源，只通过 DataSource 名称取 Adapter
+ * @deprecated（V2.2 §33）：业务 Workflow 已禁用本工厂，一律经
+ * WorkflowDataContext → Data Plan → Provider Registry 按能力取真实 Provider。
+ * 本工厂仅保留给 DEMO legacy 测试与种子数据使用。
  */
 import { MockAdapter } from './mock/mock-adapter.js';
 import { CsvImportAdapter } from './import/csv-adapter.js';
@@ -11,6 +13,7 @@ import { getDatabase } from '../db/connection.js';
 const mock = new MockAdapter();
 const manual = new ManualInputAdapter();
 
+/** @deprecated（V2.2 §33）仅 DEMO legacy 测试可用；生产 Workflow 禁止调用 */
 export function getAdapter(name: string, csvText?: string): MarketDataAdapter {
   switch (name) {
     case 'mock':

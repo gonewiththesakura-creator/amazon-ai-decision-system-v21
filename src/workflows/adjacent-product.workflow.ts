@@ -1,10 +1,9 @@
-/**
- * Workflow: adjacent_product —— 记忆棉相关待开发产品（V2 §23-34, 任务 B）
- * Research Task Book → 采集 → 标准化 → Hard Gate → 评分 → 评论缺口 → 反向审查 → 等待人工审批
+﻿/**
+ * Workflow: adjacent_product —— 记忆棉相关待开发产品（V2 §23-34, 任务 B；V2.2 §7 同构）
+ * Research Task Book → 采集（按能力取 Provider，禁止 Mock）→ 标准化 → Hard Gate → 评分 → 评论缺口 → 反向审查 → 等待人工审批
  */
 import { getDatabase } from '../db/connection.js';
 import { getResearchJob, transitionJob } from '../modules/research/job.js';
-import { getAdapter } from '../adapters/index.js';
 import { normalizeMarketData, normalizeProductData, normalizeReviewData } from '../normalization/engine.js';
 import { growthFromSnapshots, listMarketSnapshots } from '../modules/snapshots/engine.js';
 import { evaluateHardGates, computeOpportunityScore, scoreGrade, type ScoreInput } from '../modules/rules/engine.js';
@@ -13,6 +12,8 @@ import { generateInsight } from '../ai/service.js';
 import { addWatchlist, recordDataTask, runStep } from './helpers.js';
 import type { HardGateContext } from '../modules/rules/engine.js';
 import type { RawMarketData, RawProductData, RawReviewData } from '../adapters/types.js';
+import type { MarketResearchProvider } from '../adapters/providers/types.js';
+import { getCapabilityProvider, type WorkflowDataContext } from './context.js';
 
 export interface ResearchTaskBook {
   product_idea: string;
@@ -67,12 +68,20 @@ export function parseTaskBook(description: string | null): ResearchTaskBook {
   }
 }
 
-export async function runAdjacentProductWorkflow(jobId: number): Promise<void> {
+/** V2.2：Adjacent Product Workflow —— 数据全部来自 ctx.providers（禁止 getAdapter('mock')） */
+export async function runAdjacentProductWorkflow(jobId: number, ctx: WorkflowDataContext): Promise<void> {
   const db = getDatabase();
   const job = getResearchJob(jobId)!;
   const profile = getActiveRuleProfile('amazon_us_new_product_default_v1') ?? getActiveRuleProfile();
   if (!profile) throw new Error('缺少可用 RuleProfile');
-  const adapter = getAdapter('mock');
+
+  const marketCtx = ctx.providers['market_size'];
+  const topCtx = ctx.providers['top_products'];
+  const reviewCtx = ctx.providers['review_text'] ?? null;
+  const marketProvider = getCapabilityProvider<MarketResearchProvider>(ctx, 'market_size');
+  const topProductsProvider = getCapabilityProvider<MarketResearchProvider>(ctx, 'top_products');
+  const reviewProvider = reviewCtx ? (reviewCtx.impl as MarketResearchProvider) : null;
+  const isDemo = marketCtx.isMock;
 
   try {
     transitionJob(jobId, 'planned');
@@ -86,12 +95,12 @@ export async function runAdjacentProductWorkflow(jobId: number): Promise<void> {
 
     transitionJob(jobId, 'collecting');
 
-    // collect_market / collect_products / collect_reviews
+    // collect_market / collect_products / collect_reviews（按能力取 Provider）
     const collected = await runStep(jobId, 'collect_market', async () => {
-      const overview = await adapter.fetchMarketOverview({ market_name: marketName, marketplace: job.marketplace });
+      const overview = await marketProvider.getMarketOverview({ market_name: marketName, marketplace: job.marketplace });
       recordDataTask({
         jobId,
-        sourceName: 'mock',
+        sourceName: marketCtx.name,
         taskType: 'collect_market',
         target: marketName,
         status: 'success',
@@ -101,10 +110,10 @@ export async function runAdjacentProductWorkflow(jobId: number): Promise<void> {
     });
 
     const products = await runStep(jobId, 'collect_products', async () => {
-      const top = await adapter.fetchMarketProducts({ market_name: marketName, marketplace: job.marketplace }, 60);
+      const top = await topProductsProvider.getTopProducts({ market_name: marketName, marketplace: job.marketplace, limit: 60 });
       recordDataTask({
         jobId,
-        sourceName: 'mock',
+        sourceName: topCtx.name,
         taskType: 'collect_products',
         target: `${marketName} TOP60`,
         status: 'success',
@@ -113,16 +122,24 @@ export async function runAdjacentProductWorkflow(jobId: number): Promise<void> {
       return top;
     });
 
-    const reviews = await runStep(jobId, 'collect_reviews', async () => {
+    const reviews: RawReviewData[] = await runStep(jobId, 'collect_reviews', async () => {
+      // review_text 为 optional 能力：未解析时如实降级（REAL 不 Mock）
+      if (!reviewProvider) {
+        db.prepare(
+          `INSERT INTO missing_data_items (research_job_id, entity_type, entity_id, field, missing_reason, required_for_decision, manual_validation_required, status, created_at)
+           VALUES (?, 'development_project', ?, 'review_text', '当前无评论 Provider（optional 能力未解析）', 0, 1, 'open', ?)`
+        ).run(jobId, jobId, new Date().toISOString());
+        return [];
+      }
       const topAsins = products.slice(0, 10).map((p) => p.asin);
       const all: RawReviewData[] = [];
       for (const asin of topAsins) {
-        const rs = await adapter.fetchReviews({ asin, marketplace: job.marketplace }, 40);
+        const rs = await reviewProvider.getReviews({ asin, limit: 40 });
         all.push(...rs);
       }
       recordDataTask({
         jobId,
-        sourceName: 'mock',
+        sourceName: reviewCtx.name,
         taskType: 'collect_reviews',
         target: `${marketName} TOP10 评论`,
         status: 'success',
@@ -133,11 +150,11 @@ export async function runAdjacentProductWorkflow(jobId: number): Promise<void> {
 
     transitionJob(jobId, 'normalizing');
 
-    // normalize
+    // normalize（is_demo 由 Provider 决定，V2.2 §12）
     const normalized = await runStep(jobId, 'normalize', () => {
-      const marketId = normalizeMarketData(collected, { is_demo: true, job_id: jobId, entityType: 'market' }).marketId;
-      const productIds = products.map((p) => normalizeProductData(p, { is_demo: true, job_id: jobId, entityType: 'product' }).productId);
-      const reviewIds = reviews.map((r) => normalizeReviewData(r, { is_demo: true }));
+      const marketId = normalizeMarketData(collected, { is_demo: isDemo, job_id: jobId, entityType: 'market' }).marketId;
+      const productIds = products.map((p) => normalizeProductData(p, { is_demo: topCtx.isMock, job_id: jobId, entityType: 'product' }).productId);
+      const reviewIds = reviews.map((r) => normalizeReviewData(r, { is_demo: reviewCtx?.isMock ?? false }));
       return { marketId, productIds, reviewIds };
     });
 
@@ -258,6 +275,7 @@ export async function runAdjacentProductWorkflow(jobId: number): Promise<void> {
         data: {
           reviews: reviews.map((r) => ({ product_asin: r.asin, text: r.text, rating: r.rating })),
           competitor_asins: products.slice(0, 10).map((p) => p.asin),
+          source: reviewCtx ? reviewCtx.name : undefined,
         },
       });
       return { insight_id: insightId };
@@ -334,3 +352,5 @@ export async function runAdjacentProductWorkflow(jobId: number): Promise<void> {
     throw e;
   }
 }
+
+

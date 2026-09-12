@@ -1,17 +1,23 @@
 /**
  * Manual Provider（V2.1 §1.4）——人工录入：采购价/MOQ/包装/生产周期/头程/检测/供应商/合规/专利
- * 本版：能力声明 + 配置就绪（人工录入始终可用，但无数据时 healthCheck 收缩）。
+ * V2.2：人工录入通道始终可用（CONNECTED 语义 = 通道就绪，非远程凭据）。
  */
 import { getDatabase } from '../../db/connection.js';
-import type { Capability, CostProvider, ProviderBase, ProviderConnectionStatus } from './types.js';
+import type { Capability, CostProvider, ProviderBase, ProviderConnectionStatus, ProviderHealthResult } from './types.js';
 
 export class ManualProvider implements ProviderBase, CostProvider {
   readonly name = 'manual';
   readonly isMock = false;
   readonly capabilities: Capability[] = ['supply_chain', 'product_fees', 'review_text'];
 
+  private lastHealth: ProviderHealthResult | null = null;
+
+  getLastHealth(): ProviderHealthResult | null {
+    return this.lastHealth;
+  }
+
   getStatus(): ProviderConnectionStatus {
-    return 'Connected';
+    return 'CONNECTED';
   }
 
   getStatusDetail(): string {
@@ -30,6 +36,18 @@ export class ManualProvider implements ProviderBase, CostProvider {
     } catch {
       return ['review_text'];
     }
+  }
+
+  async healthCheckRemote(): Promise<ProviderHealthResult> {
+    const h: ProviderHealthResult = {
+      status: 'CONNECTED',
+      checkedAt: new Date().toISOString(),
+      latencyMs: 0,
+      capabilities: this.healthCheck(),
+      errorMessage: '人工录入通道就绪',
+    };
+    this.lastHealth = h;
+    return h;
   }
 
   async getProductFees(input: { asin: string; marketplace: string }): Promise<{ fba_fee: number; referral_fee: number; total: number }> {

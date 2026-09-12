@@ -1,11 +1,13 @@
 /**
- * Workflow Orchestrator（V2 §6；V2.1 §5/§6）—— 控制 Research Job 下一步做什么
+ * Workflow Orchestrator（V2 §6；V2.1 §5/§6；V2.2 §34）—— 控制 Research Job 下一步做什么
  * 统一入口：runResearchJob(jobId) 按类型分发到四条工作流
  * V2.1：collecting 前先生成 Data Plan；required capability 缺 provider → needs_data（不自动切 Mock）
+ * V2.2：Orchestrator 构建 WorkflowDataContext 并传给工作流，工作流只能按能力取 Provider，禁止 Mock
  */
 import { getDatabase } from '../db/connection.js';
 import { getResearchJob, transitionJob } from '../modules/research/job.js';
 import { buildDataPlan } from '../modules/plans/engine.js';
+import { buildWorkflowContext, type WorkflowDataContext } from './context.js';
 import { runExistingMarketWorkflow } from './existing-market.workflow.js';
 import { runOwnedProductWorkflow } from './owned-product.workflow.js';
 import { runAdjacentProductWorkflow } from './adjacent-product.workflow.js';
@@ -35,18 +37,21 @@ export async function runResearchJob(jobId: number): Promise<{ jobId: number; st
     return { jobId, status: 'needs_data' };
   }
 
+  // V2.2 §34：Orchestrator 构建并传入 Context（Workflow 内不再自选 Provider）
+  const ctx = buildWorkflowContext(jobId);
+
   switch (job.job_type) {
     case 'existing_market':
-      await runExistingMarketWorkflow(jobId);
+      await runExistingMarketWorkflow(jobId, ctx);
       break;
     case 'owned_product':
-      await runOwnedProductWorkflow(jobId);
+      await runOwnedProductWorkflow(jobId, ctx);
       break;
     case 'adjacent_product':
-      await runAdjacentProductWorkflow(jobId);
+      await runAdjacentProductWorkflow(jobId, ctx);
       break;
     case 'new_opportunity':
-      await runNewOpportunityWorkflow(jobId);
+      await runNewOpportunityWorkflow(jobId, ctx);
       break;
     default:
       throw new Error(`未知任务类型: ${(job as { job_type: string }).job_type}`);
@@ -68,3 +73,4 @@ export async function retryResearchJob(jobId: number): Promise<{ jobId: number; 
 }
 
 export { runExistingMarketWorkflow, runOwnedProductWorkflow, runAdjacentProductWorkflow, runNewOpportunityWorkflow };
+

@@ -1,10 +1,9 @@
 ﻿/**
- * Workflow: existing_market —— 现有记忆棉枕头市场诊断（V2 §14）
- * 数据采集 → 标准化 → 快照 → 计算 → AI 解释 → 证据 → 监控
+ * Workflow: existing_market —— 现有记忆棉枕头市场诊断（V2 §14；V2.2 §7）
+ * 数据采集（按能力取 Provider，禁止 Mock）→ 标准化 → 快照 → 计算 → AI 解释 → 证据 → 监控
  */
 import { getDatabase } from '../db/connection.js';
 import { getResearchJob, transitionJob } from '../modules/research/job.js';
-import { getAdapter } from '../adapters/index.js';
 import { normalizeMarketData, normalizeProductData, hasRequiredData } from '../normalization/engine.js';
 import {
   findMarketNode,
@@ -14,6 +13,8 @@ import {
 } from '../modules/snapshots/engine.js';
 import { generateInsight } from '../ai/service.js';
 import type { RawMarketData, RawProductData } from '../adapters/types.js';
+import type { MarketResearchProvider } from '../adapters/providers/types.js';
+import { getCapabilityProvider, type WorkflowDataContext } from './context.js';
 import { addWatchlist, recordDataTask, runStep } from './helpers.js';
 import { getActiveRuleProfile } from '../modules/rules/profile.js';
 
@@ -50,12 +51,19 @@ function listChildMarkets(parentId: number): Array<{ id: number; name: string }>
   return db.prepare('SELECT id, name FROM markets WHERE parent_id = ?').all(parentId) as Array<{ id: number; name: string }>;
 }
 
-export async function runExistingMarketWorkflow(jobId: number): Promise<void> {
+/** V2.2 §7：Existing Market Workflow —— 数据全部来自 ctx.providers 按能力解析的真实 Provider */
+export async function runExistingMarketWorkflow(jobId: number, ctx: WorkflowDataContext): Promise<void> {
   const db = getDatabase();
   const job = getResearchJob(jobId)!;
   const profile = getActiveRuleProfile('amazon_us_memory_foam_v1') ?? getActiveRuleProfile();
   if (!profile) throw new Error('缺少可用 RuleProfile');
-  const adapter = getAdapter('mock');
+
+  // V2.2 §7：按能力取 Provider（禁止 getAdapter('mock')）
+  const marketCtx = ctx.providers['market_size'];
+  const topCtx = ctx.providers['top_products'];
+  const marketProvider = getCapabilityProvider<MarketResearchProvider>(ctx, 'market_size');
+  const topProductsProvider = getCapabilityProvider<MarketResearchProvider>(ctx, 'top_products');
+  const isDemo = marketCtx.isMock;
 
   try {
     transitionJob(jobId, 'planned');
@@ -69,18 +77,18 @@ export async function runExistingMarketWorkflow(jobId: number): Promise<void> {
 
     transitionJob(jobId, 'collecting');
 
-    // collect_market：主市场 + 子市场概览
+    // collect_market：主市场 + 子市场概览（market_size 能力）
     const marketOverviews: RawMarketData[] = await runStep(jobId, 'collect_market', async () => {
-      const main = await adapter.fetchMarketOverview({ market_name: marketName, marketplace: job.marketplace });
+      const main = await marketProvider.getMarketOverview({ market_name: marketName, marketplace: job.marketplace });
       const { mainId } = ensureMarketTree(job.marketplace);
       const children = listChildMarkets(mainId);
       const subs: RawMarketData[] = [];
       for (const c of children) {
-        subs.push(await adapter.fetchMarketOverview({ market_name: c.name, marketplace: job.marketplace }));
+        subs.push(await marketProvider.getMarketOverview({ market_name: c.name, marketplace: job.marketplace }));
       }
       recordDataTask({
         jobId,
-        sourceName: 'mock',
+        sourceName: marketCtx.name,
         taskType: 'collect_market',
         target: marketName,
         status: 'success',
@@ -89,12 +97,12 @@ export async function runExistingMarketWorkflow(jobId: number): Promise<void> {
       return [main, ...subs];
     });
 
-    // collect_products：TOP100
+    // collect_products：TOP100（top_products 能力）
     const products: RawProductData[] = await runStep(jobId, 'collect_products', async () => {
-      const top = await adapter.fetchMarketProducts({ market_name: marketName, marketplace: job.marketplace }, 100);
+      const top = await topProductsProvider.getTopProducts({ market_name: marketName, marketplace: job.marketplace, limit: 100 });
       recordDataTask({
         jobId,
-        sourceName: 'mock',
+        sourceName: topCtx.name,
         taskType: 'collect_products',
         target: `${marketName} TOP100`,
         status: 'success',
@@ -105,10 +113,10 @@ export async function runExistingMarketWorkflow(jobId: number): Promise<void> {
 
     transitionJob(jobId, 'normalizing');
 
-    // normalize：市场 + 产品
+    // normalize：市场 + 产品（is_demo 由 Provider 决定，V2.2 §12）
     const normalized = await runStep(jobId, 'normalize', () => {
-      const marketIds = marketOverviews.map((m) => normalizeMarketData(m, { is_demo: true, job_id: jobId, entityType: 'market' }).marketId);
-      const productIds = products.map((p) => normalizeProductData(p, { is_demo: true, job_id: jobId, entityType: 'product' }).productId);
+      const marketIds = marketOverviews.map((m) => normalizeMarketData(m, { is_demo: isDemo, job_id: jobId, entityType: 'market' }).marketId);
+      const productIds = products.map((p) => normalizeProductData(p, { is_demo: isDemo, job_id: jobId, entityType: 'product' }).productId);
       return { market_ids: marketIds, product_ids: productIds };
     });
 
@@ -120,7 +128,6 @@ export async function runExistingMarketWorkflow(jobId: number): Promise<void> {
         .prepare('SELECT COUNT(*) AS c FROM missing_data_items WHERE research_job_id = ? AND required_for_decision = 1')
         .get(jobId) as { c: number };
       if (critical.c > 0) {
-        // 演示数据关键字段齐备；若缺失则如实标记
         return { critical_missing: critical.c, all_missing: allMissing.c, valid: false };
       }
       return { critical_missing: 0, all_missing: allMissing.c, valid: true };
@@ -173,7 +180,7 @@ export async function runExistingMarketWorkflow(jobId: number): Promise<void> {
         entityId: metrics.main_market_id,
         jobId,
         promptVersion: 'market-analysis.v1',
-        data: { ...metrics, missing },
+        data: { ...metrics, missing, source: marketCtx.name },
       });
       return { insight_id: insightId };
     });
@@ -202,3 +209,5 @@ export async function runExistingMarketWorkflow(jobId: number): Promise<void> {
     throw e;
   }
 }
+
+

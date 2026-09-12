@@ -26,6 +26,16 @@ const PORT = Number(process.env.PORT ?? 3000);
 getDatabase();
 seedDemo();
 registerAllProviders();
+// V2.2 §28：启动时执行真实远程健康检查（无凭据 Provider 保持 UNCONFIGURED，不阻塞启动）
+void (async () => {
+  try {
+    const { providerRegistry } = await import('./adapters/providers/registry.js');
+    await providerRegistry.refreshAllHealth();
+    console.log('  Provider 远程健康检查完成（Connected 仅来自真实 healthCheckRemote）');
+  } catch (e) {
+    console.warn(`  Provider 健康检查跳过: ${e instanceof Error ? e.message : String(e)}`);
+  }
+})();
 
 const app = express();
 app.use(express.json({ limit: '20mb' }));

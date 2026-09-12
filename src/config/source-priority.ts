@@ -37,3 +37,15 @@ export const JOB_TYPE_REQUIRED_CAPABILITIES: Record<string, { required: Capabili
     optional: ['top_products', 'keyword_volume', 'review_text', 'estimated_sales', 'supply_chain'],
   },
 };
+
+/**
+ * V2.2 §50：把 Provider 注入指定能力的优先级链首（Sentinel 测试源用）。
+ * 生产运行不调用（SENTINEL_PROVIDER 未设置时零影响）。
+ */
+export function injectPriority(provider: string, capabilities: Capability[]): void {
+  for (const [cap, chain] of Object.entries(SOURCE_PRIORITY)) {
+    if (capabilities.includes(cap as Capability) && !chain.includes(provider)) {
+      chain.unshift(provider);
+    }
+  }
+}

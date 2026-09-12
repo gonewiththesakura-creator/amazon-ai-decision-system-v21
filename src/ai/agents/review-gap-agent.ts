@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Review Gap Agent（确定性版）—— 评论缺口分析（V2 §20-22）
  * 把"有人抱怨"升级为"商业机会"必须满足：多竞品共现 + 供应链可解决 + 成本可控
  */
@@ -14,6 +14,8 @@ export interface ReviewGapData {
   reviews: ReviewInput[];
   /** 参与统计的竞品 ASIN 列表（用于计算 competitors_affected） */
   competitor_asins: string[];
+  /** V2.2 §12：评论数据来源 Provider 名 */
+  source?: string;
 }
 
 interface IssueDef {
@@ -92,7 +94,7 @@ export function analyzeReviewGap(data: ReviewGapData): AgentOutput {
         claim: `评论高频痛点「${def.label}」出现频率 ${(frequency * 100).toFixed(0)}%，影响 ${affected} 个竞品，供应链可解决`,
         metric_name: `review_issue_${def.id}`,
         metric_value: Math.round(frequency * 1000) / 1000,
-        source: 'Review(Mock)',
+        source: data.source ?? 'Review(Mock)',
         source_record_id: `${def.id}:${affected}`,
         collected_at: new Date().toISOString(),
         calculation: `${count}/${total} = ${frequency}`,
@@ -110,7 +112,7 @@ export function analyzeReviewGap(data: ReviewGapData): AgentOutput {
       claim: `评论缺口分析：采样 ${total} 条评论，未发现跨竞品高频痛点`,
       metric_name: 'review_gap_issues_found',
       metric_value: 0,
-      source: 'Review(Mock)',
+      source: data.source ?? 'Review(Mock)',
       source_record_id: `review-gap:${total}`,
       collected_at: new Date().toISOString(),
       calculation: `${total} 条评论`,
@@ -138,3 +140,4 @@ export function analyzeReviewGap(data: ReviewGapData): AgentOutput {
     model: 'rule-based-v1',
   };
 }
+

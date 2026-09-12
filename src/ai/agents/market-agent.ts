@@ -20,11 +20,13 @@ export interface MarketAgentData {
   avg_price: number | null;
   sub_markets: Array<{ name: string; growth30d: number | null; monthly_sales: number | null; note?: string }>;
   missing: string[];
+  /** V2.2 §12：数据实际来源 Provider 名（Evidence source 必须真实，禁止硬编码 SellerSprite(Mock)） */
+  source?: string;
 }
 
 export function analyzeMarket(data: MarketAgentData): AgentOutput {
   const evidence: AgentDraftEvidence[] = [];
-  const src = 'SellerSprite(Mock)';
+  const src = data.source ?? 'SellerSprite(Mock)';
   const collected = new Date().toISOString();
   const missing = data.missing;
 
@@ -45,6 +47,11 @@ export function analyzeMarket(data: MarketAgentData): AgentOutput {
   const g90 = data.growth90d;
   const concentration = data.concentration_top10;
   const newShare = data.new_product_share;
+
+  // V2.2 §31：市场规模（monthly_sales）必须进入 Evidence（987654 可追溯）
+  if (data.monthly_sales !== null) {
+    push(`市场规模 月销量 ${data.monthly_sales}`, 'market_monthly_sales', data.monthly_sales, `${data.monthly_sales}`);
+  }
 
   let status = '数据不足';
   if (g30 !== null && g90 !== null) {

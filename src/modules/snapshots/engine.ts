@@ -165,7 +165,7 @@ export function findProductByAsin(asin: string): number | null {
 export function saveProductSnapshot(
   productId: number,
   raw: RawProductData,
-  opts: { is_demo?: boolean; date?: string; source_metadata?: Record<string, unknown> }
+  opts: { is_demo?: boolean; date?: string; source_metadata?: Record<string, unknown>; series?: boolean }
 ): SnapshotWriteResult {
   const db = getDatabase();
   const latest = raw.snapshots?.length ? raw.snapshots[raw.snapshots.length - 1]! : null;
@@ -188,10 +188,13 @@ export function saveProductSnapshot(
       latest?.rating ?? raw.rating,
       latest?.review_count ?? raw.review_count,
       latest?.bsr ?? raw.bsr,
-      latest?.estimated_sales ?? raw.estimated_sales_30d,
+      // V2.2 §26：系列快照历史期如实保留 null（不允许用 30D 总数兜底污染历史）
+      latest?.estimated_sales ?? (opts.series ? null : raw.estimated_sales_30d),
       latest && latest.estimated_sales != null && (latest.price ?? raw.price) != null
         ? latest.estimated_sales * (latest.price ?? raw.price!)
-        : raw.estimated_revenue_30d,
+        : opts.series
+          ? null
+          : raw.estimated_revenue_30d,
       raw.coupon,
       raw.seller_count,
       JSON.stringify({
@@ -217,7 +220,7 @@ export function saveProductSnapshotSeries(
     ? raw.snapshots
     : [{ date: new Date().toISOString().slice(0, 10), price: raw.price, rating: raw.rating, review_count: raw.review_count, bsr: raw.bsr, estimated_sales: raw.estimated_sales_30d }];
   return series.map((s) =>
-    saveProductSnapshot(productId, { ...raw, snapshots: [s] }, { is_demo: opts.is_demo, date: s.date })
+    saveProductSnapshot(productId, { ...raw, snapshots: [s] }, { is_demo: opts.is_demo, date: s.date, series: true })
   );
 }
 

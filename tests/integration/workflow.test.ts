@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { openInMemory, closeDatabase, getDatabase } from '../../src/db/connection.js';
 import { createResearchJob, getResearchJob, listSteps } from '../../src/modules/research/job.js';
 import { runResearchJob } from '../../src/workflows/orchestrator.js';
+import { registerAllProviders } from '../../src/adapters/providers/index.js';
 import { listEvidenceByJob } from '../../src/modules/evidence/engine.js';
 import { seedOwnedProducts, seedDemoJobs } from '../../src/seed/seed-demo.js';
 import { approveResearchJob } from '../../src/modules/decisions/engine.js';
@@ -10,6 +11,7 @@ import { createRuleProfile } from '../../src/modules/rules/profile.js';
 
 test('整链路（任务 B）：CreateJob → Collect → Normalize → Snapshot → Rule → AI → Evidence → 审批', async () => {
   openInMemory();
+  registerAllProviders();
   try {
     // 预置规则档案（工作流需要 active profile）
     createRuleProfile({ name: 'amazon_us_memory_foam_v1', version: '1.0.0', active: true });
@@ -70,6 +72,7 @@ test('整链路（任务 B）：CreateJob → Collect → Normalize → Snapshot
 
 test('整链路（任务 A）：owned_product 对 SKU-A 诊断出明显跑输，而非基本同步', async () => {
   openInMemory();
+  registerAllProviders();
   try {
     seedOwnedProducts();
     seedDemoJobs();
@@ -102,3 +105,5 @@ test('整链路（任务 A）：owned_product 对 SKU-A 诊断出明显跑输，
     closeDatabase();
   }
 });
+
+

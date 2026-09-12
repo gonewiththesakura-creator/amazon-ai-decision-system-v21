@@ -1,10 +1,10 @@
 ﻿/**
- * Workflow: owned_product —— 自有 SKU 竞争表现诊断（V2 §16）
+ * Workflow: owned_product —— 自有 SKU 竞争表现诊断（V2 §16；V2.2 §8/§9）
+ * 多 Provider：owned_orders → Amazon；market_growth / top_products → SellerSprite；inventory → Amazon（optional）
  * SKU vs 市场 vs 直接竞品 → 相对表现 → AI 诊断 → 证据 → 监控
  */
 import { getDatabase } from '../db/connection.js';
 import { getResearchJob, transitionJob } from '../modules/research/job.js';
-import { getAdapter } from '../adapters/index.js';
 import { normalizeMarketData, normalizeProductData } from '../normalization/engine.js';
 import {
   findMarketNode,
@@ -18,15 +18,31 @@ import { computeRelativePerformance, percentile } from '../modules/rules/engine.
 import { getActiveRuleProfile } from '../modules/rules/profile.js';
 import { generateInsight } from '../ai/service.js';
 import { addWatchlist, recordDataTask, runStep } from './helpers.js';
-import type { RawProductData } from '../adapters/types.js';
+import type { RawMarketData, RawProductData } from '../adapters/types.js';
+import type { MarketResearchProvider, OwnedBusinessProvider } from '../adapters/providers/types.js';
+import { getCapabilityProvider, type WorkflowDataContext } from './context.js';
 import type { CompetitorChange } from '../ai/agents/sku-agent.js';
 
-export async function runOwnedProductWorkflow(jobId: number): Promise<void> {
+/**
+ * V2.2 §8/§9：Owned Product Workflow —— 数据来自多 Provider（禁止 oneProviderForEverything）
+ * - owned_orders → Amazon SP-API / Amazon Import（自有真实销量，优先级最高）
+ * - market_growth / top_products → SellerSprite（市场/竞品）
+ * - inventory → Amazon（optional，本版不阻塞）
+ */
+export async function runOwnedProductWorkflow(jobId: number, ctx: WorkflowDataContext): Promise<void> {
   const db = getDatabase();
   const job = getResearchJob(jobId)!;
   const profile = getActiveRuleProfile('amazon_us_memory_foam_v1') ?? getActiveRuleProfile();
   if (!profile) throw new Error('缺少可用 RuleProfile');
-  const adapter = getAdapter('mock');
+
+  // V2.2 §9：按能力分别取 Provider
+  const ownedCtx = ctx.providers['owned_orders'];
+  const marketCtx = ctx.providers['market_growth'];
+  const topCtx = ctx.providers['top_products'];
+  const ownedProvider = getCapabilityProvider<OwnedBusinessProvider>(ctx, 'owned_orders');
+  const marketProvider = getCapabilityProvider<MarketResearchProvider>(ctx, 'market_growth');
+  const topProductsProvider = getCapabilityProvider<MarketResearchProvider>(ctx, 'top_products');
+  const isDemo = ownedCtx.isMock && marketCtx.isMock && topCtx.isMock;
 
   try {
     transitionJob(jobId, 'planned');
@@ -48,14 +64,56 @@ export async function runOwnedProductWorkflow(jobId: number): Promise<void> {
 
     transitionJob(jobId, 'collecting');
 
-    // collect_products：SKU 自身 + 所属市场 TOP 竞品
+    // collect_products：SKU 实际销量（owned_orders）+ 市场 TOP 竞品（top_products）
     const collected = await runStep(jobId, 'collect_products', async () => {
-      const skuRaw = await adapter.fetchProductDetail({ asin: target.asin, marketplace: job.marketplace });
-      const marketName = target.market_name ?? skuRaw.market_name ?? 'Memory Foam Pillow';
-      const all = await adapter.fetchMarketProducts({ market_name: marketName, marketplace: job.marketplace }, 100);
+      // V2.2 §8：SKU 自有销量来自 Amazon（owned_orders），不再用 Mock 的 fetchProductDetail
+      const orders = await ownedProvider.getOrders({ from: '2026-06-01', to: '2026-09-01' });
+      const skuOrders = orders.filter((o) => o.asin === target.asin || o.asin === target.sku);
+      // 订单 → 按日聚合 units，再聚合成 4 期快照（90/30/7/0 天前，30 天滚动窗口销量）
+      const daily = new Map<string, number>();
+      for (const o of skuOrders) daily.set(o.date, (daily.get(o.date) ?? 0) + o.units);
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const DAY = 86400000;
+      const snapshotWindows = [90, 30, 7, 0] as const;
+      const skuSnapshots = snapshotWindows.map((w) => {
+        const from = new Date(today.getTime() - (w + 30) * DAY);
+        const to = new Date(today.getTime() - w * DAY);
+        let sum = 0;
+        for (const [date, u] of daily) {
+          const d = new Date(date + 'T00:00:00Z').getTime();
+          if (d >= from.getTime() && d < to.getTime()) sum += u;
+        }
+        return { date: to.toISOString().slice(0, 10), price: null, rating: null, review_count: null, bsr: null, estimated_sales: sum > 0 ? sum : null };
+      });
+      const totalUnits = skuOrders.reduce((s, o) => s + (o.units ?? 0), 0);
+      const totalRevenue = skuOrders.reduce((s, o) => s + (o.revenue ?? 0), 0);
+      const skuRaw: RawProductData = {
+        asin: target.asin,
+        brand: null,
+        title: target.internal_name || target.sku,
+        image_url: target.image_url,
+        market_name: target.market_name,
+        price: null,
+        rating: null,
+        review_count: null,
+        bsr: null,
+        estimated_sales_30d: totalUnits > 0 ? totalUnits : null,
+        estimated_revenue_30d: totalRevenue > 0 ? totalRevenue : null,
+        coupon: null,
+        seller_count: null,
+        source: ownedCtx.name,
+        source_type: 'amazon_owned',
+        collected_at: new Date().toISOString(),
+        is_estimated: false,
+        confidence: 1,
+        snapshots: skuSnapshots,
+      };
+      const marketName = target.market_name ?? 'Memory Foam Pillow';
+      const all = await topProductsProvider.getTopProducts({ market_name: marketName, marketplace: job.marketplace, limit: 100 });
       recordDataTask({
         jobId,
-        sourceName: 'mock',
+        sourceName: `${ownedCtx.name}+${topCtx.name}`,
         taskType: 'collect_products',
         target: `${target.sku} + ${marketName} TOP100`,
         status: 'success',
@@ -66,20 +124,20 @@ export async function runOwnedProductWorkflow(jobId: number): Promise<void> {
 
     transitionJob(jobId, 'normalizing');
 
-    // normalize：SKU + 市场（真实画像含快照序列）+ 竞品
+    // normalize：SKU + 市场（真实画像含快照序列）+ 竞品（is_demo 由 Provider 决定，V2.2 §12）
     const normalized = await runStep(jobId, 'normalize', async () => {
       const marketRaw = collected.skuRaw.market_name ?? collected.marketName;
-      // 拉取市场画像（含 5 期快照序列），否则市场只有"今日"一张空快照，增速无法计算
-      const marketOverview = await adapter.fetchMarketOverview({ market_name: marketRaw, marketplace: job.marketplace });
-      const marketId = normalizeMarketData(marketOverview, { is_demo: true, job_id: jobId, entityType: 'market' }).marketId;
+      // 市场画像（market_growth 能力，含快照序列 → 增速可算）
+      const marketOverview = await marketProvider.getMarketOverview({ market_name: marketRaw, marketplace: job.marketplace });
+      const marketId = normalizeMarketData(marketOverview, { is_demo: marketCtx.isMock, job_id: jobId, entityType: 'market' }).marketId;
 
-      const skuProductId = normalizeProductData(collected.skuRaw, { is_demo: true, job_id: jobId, entityType: 'product' }).productId;
+      const skuProductId = normalizeProductData(collected.skuRaw, { is_demo: ownedCtx.isMock, job_id: jobId, entityType: 'product' }).productId;
       // 关联自有 SKU
       db.prepare('UPDATE products SET is_owned = 1, owned_sku_id = ?, market_id = COALESCE(market_id, ?) WHERE id = ?').run(target.id, marketId, skuProductId);
       db.prepare('UPDATE owned_products SET market_id = COALESCE(market_id, ?) WHERE id = ?').run(marketId, target.id);
 
       const competitorIds = collected.competitors.map((c) =>
-        normalizeProductData(c, { is_demo: true, job_id: jobId, entityType: 'product' }).productId
+        normalizeProductData(c, { is_demo: topCtx.isMock, job_id: jobId, entityType: 'product' }).productId
       );
       return { skuProductId, marketId, competitorIds };
     });
@@ -240,6 +298,7 @@ export async function runOwnedProductWorkflow(jobId: number): Promise<void> {
           percentile_review: calc.percentile.review,
           competitor_changes: calc.competitorChanges,
           missing: [...missing, ...opMissing],
+          source: `${ownedCtx.name}+${marketCtx.name}+${topCtx.name}`,
         },
       });
       return { insight_id: insightId };
@@ -267,4 +326,5 @@ export async function runOwnedProductWorkflow(jobId: number): Promise<void> {
     throw e;
   }
 }
+
 

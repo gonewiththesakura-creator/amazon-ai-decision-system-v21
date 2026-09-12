@@ -7,6 +7,7 @@
  */
 import { getDatabase } from '../db/connection.js';
 import type { RawMarketData, RawProductData, RawReviewData } from '../adapters/types.js';
+import { getMode } from '../config/mode.js';
 import { findMarketNode, findProductByAsin, saveMarketSnapshot, saveMarketSnapshotSeries, saveProductSnapshot, saveProductSnapshotSeries, upsertMarketNode, upsertProduct } from '../modules/snapshots/engine.js';
 
 export interface MissingField {
@@ -61,8 +62,18 @@ export interface NormalizeOptions {
   persist_snapshots?: boolean;
 }
 
+/** V2.2 §30 Runtime Mock Guard：REAL 模式下 Normalize 前禁止任何 source='mock' 的原始数据进入（双保险） */
+export function assertNoRuntimeMock(raw: Pick<RawMarketData, 'source'>, mode: string): void {
+  if (mode === 'REAL' && raw.source === 'mock') {
+    throw new Error(
+      `Runtime Mock Guard: REAL 模式下 Normalize 前发现 raw.source='mock'（source=${raw.source}），禁止 Mock 数据进入生产链路`
+    );
+  }
+}
+
 /** 标准化市场数据：统一字段 → 存市场节点 + 快照；缺失字段记队列 */
 export function normalizeMarketData(raw: RawMarketData, opts: NormalizeOptions = {}): NormalizedMarket {
+  assertNoRuntimeMock(raw, getMode());
   const missing: MissingField[] = [
     missingField(raw.monthly_sales, 'monthly_sales', '数据源未提供月销量', true),
     missingField(raw.monthly_revenue, 'monthly_revenue', '数据源未提供月销售额', false),
@@ -95,6 +106,7 @@ export function normalizeMarketData(raw: RawMarketData, opts: NormalizeOptions =
 
 /** 标准化产品数据：统一字段 → 存产品 + 快照；缺失字段记队列 */
 export function normalizeProductData(raw: RawProductData, opts: NormalizeOptions = {}): NormalizedProduct {
+  assertNoRuntimeMock(raw, getMode());
   const missing: MissingField[] = [
     missingField(raw.price, 'price', '数据源未提供价格', false),
     missingField(raw.review_count, 'review_count', '数据源未提供评论数', true),

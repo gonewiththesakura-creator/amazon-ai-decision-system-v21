@@ -1,33 +1,39 @@
-# Amazon AI 决策系统 V2.1（真实数据优先版）
+# Amazon AI 决策系统 V2.2（Live Provider Execution）
 
-> 依据《Amazon_AI决策系统_V2.1_真实数据优先实施指令》在 V2（工作流优先版）基础上改造：
+> 依据《Amazon_AI决策系统_V2.1_真实数据优先实施指令》在 V2（工作流优先版）基础上改造，并于 V2.2 按《Amazon_AI决策系统_V2.2_LiveProvider修复指令》完成 Live Provider 执行：
 > **Mock 用来开发系统，真实数据用来证明系统；SellerSprite 负责市场竞品，Amazon 负责自有真实数据；Amazon 官方优先于第三方估算；系统能对账、校准、追溯、发现冲突。**
+> V2.2 目标：REAL 模式下 Research Job 的最终 Snapshot/Metric/Evidence/Insight **必须来自真实 Provider 或真实导入数据**，禁止任何隐式 Mock。
 > 目标：4 个真实 SKU 能跑（而不是 Demo 能跑）。
 
 ***
 
-## 0. 项目阶段标注（§54，三段式，2026-09-11）
+## 0. 项目阶段标注（§60，三段式，2026-09-12）
 
 | 阶段 | 状态 | 说明 |
 |---|---|---|
-| Architecture Prototype | **Complete** | V2 全链路 + V2.1 数据层/Provider/模式/对账/校准/Evidence/硬门禁全部落地，31/31 测试通过 |
-| Real Data Integration | **In Progress** | SellerSprite 真实文件已导入验收（113 行 × 32 列）；Amazon 官方数据待凭据/报表；真实 4 SKU 待录入 |
+| Architecture Prototype | **Complete** | V2 全链路 + V2.1 数据层/Provider/模式/对账/校准/Evidence/硬门禁 + V2.2 Provider 执行（Context 唯一入口 / 8 态健康检查 / 真实 MCP/API/SP-API/Ads 客户端 / Import null+SHA256 / Sentinel / HTTP Black Box）全部落地，37/37 测试通过 |
+| Real Data Integration | **In Progress** | SellerSprite 真实文件已导入验收（113 行 × 32 列，假发数据仅证明管线）；**记忆棉真实文件 / 真实 4 SKU / Amazon 凭据或报表待提供**（缺项按 §62 如实标 FAIL，见 V2_2_REAL_MEMORY_FOAM_DATA_REPORT.md / V2_2_AMAZON_LIVE_STATUS.md） |
 | Production Validation | **Not Passed** | 未经任何生产环境/真实资金验证，严禁用于真实业务决策 |
 
-> 项目当前状态：**REAL_DATA_INTEGRATION**
-> 五份必交报告：`V2_1_GAP_AUDIT.md`（已完成）· `REAL_DATA_INTEGRATION_REPORT.md` · `SELLERSPRITE_MAPPING_REPORT.md` · `AMAZON_INTEGRATION_STATUS.md` · `RED_TEAM_TEST_REPORT.md`
+> 项目当前状态：**REAL_DATA_INTEGRATION**（**未标注 "Live Provider Connected"**——真实凭据与记忆棉数据到位并通过验收后才可升级标注）
+> V2.1 五份必交报告：`V2_1_GAP_AUDIT.md` · `REAL_DATA_INTEGRATION_REPORT.md` · `SELLERSPRITE_MAPPING_REPORT.md` · `AMAZON_INTEGRATION_STATUS.md` · `RED_TEAM_TEST_REPORT.md`
+> V2.2 五份必交报告：`V2_2_PROVIDER_EXECUTION_AUDIT.md` · `V2_2_LIVE_PROVIDER_REPORT.md` · `V2_2_BLACKBOX_TEST_REPORT.md` · `V2_2_REAL_MEMORY_FOAM_DATA_REPORT.md` · `V2_2_AMAZON_LIVE_STATUS.md`
 
-## 1. 当前状态（2026-09-11）
+## 1. 当前状态（2026-09-12）
 
 **运行中：**[http://localhost:3000](http://localhost:3000)（服务已后台启动；`data/amazon-ai.db` 含演示数据 + 4 个真实 SellerSprite 导入批次）
 
-### V2.1 已实现 ✅
+### V2.2 已实现 ✅（Live Provider Execution）
 
 | 板块 | 内容 |
 | ---- | ---- |
-| 数据层 | 新增 11 张表（raw_ingestions / raw_records / normalization_mappings / mapping_queue / provider_status / calibration_stats / source_conflicts / system_settings / data_plans / reconciliation_results / capability_matrix）；migration v1→v3；keyword_snapshots 补真实列（aba_weekly_rank/clicks/impressions/purchases/purchase_rate/traffic_share） |
-| Provider Registry | 8 个 Provider（sellersprite_mcp/api/import + amazon_spapi/ads/import + manual + mock），按能力+模式解析；**REAL 模式跳过 isMock，缺能力抛 NeedsDataError**；未配置凭据如实标注 Unauthorized |
-| 系统模式 | DEMO / REAL / HYBRID（存 system_settings）；X-System-Mode 响应头；UI 三态横幅 |
+| Provider 唯一入口 | `WorkflowDataContext`（jobId/mode/dataPlan/providers）+ `buildWorkflowContext` + `getCapabilityProvider`；4 条 Workflow 全部改为 `(jobId, ctx)`，数据只经能力解析，**生产无 `getAdapter('mock')`、无硬编码 `is_demo: true`** |
+| 8 态健康检查 | UNCONFIGURED/CONFIGURED/CONNECTING/CONNECTED/DEGRADED/RATE_LIMITED/UNAUTHORIZED/ERROR；**Connected 唯一来源 = 真实 healthCheckRemote 成功**（填 env 不等于 Connected）；启动异步刷新 + `POST /api/providers/health/refresh` |
+| 真实客户端 | SellerSprite MCP（stdio JSON-RPC 握手/工具发现/调用）、SellerSprite API（X-Api-Key 真实 HTTP）、Amazon SP-API（LWA + Orders 真实查询 = Connected）、Amazon Ads（LWA + profiles 真实查询 = Connected） |
+| Amazon Import 修复 | 缺失字段保留 null + missing_data_items（不补 0）；payload_hash 真 SHA256；五类报表 Mapping Template + 未知列 → mapping_queue；healthCheckRemote = 真实导入记录 |
+| Sentinel Real Provider | `SENTINEL_PROVIDER=market/owned/1` 注册 isMock=false Provider（987654 / 4321+17.89），按能力注入 SOURCE_PRIORITY，供 REAL 黑盒验收 |
+| 双保险 | Data Plan 层 `assertNoMockProviders` + Normalize 前 Runtime Mock Guard（REAL + raw.source='mock' → throw） |
+| 测试 | **37/37**（31 项 V2.1 回归 + 5 项 V2.2 HTTP Black Box + 容器）· `npx tsc --noEmit` 0 error |
 | 真实导入 | ReverseASIN xlsx/csv/tsv 解析（UTF-8/GBK/BOM 自动识别；$39.99 / 39,99 / MX$0.02 / 12% 数值化）；32 列中文映射；raw 全量留存；未知列进 mapping_queue；同日快照幂等覆盖 |
 | Data Plan | 任务运行前生成数据计划（buildDataPlan），缺能力记 missing_data_items 并转 needs_data |
 | 对账 | reconcileKeywordIngestion（MATCH/DIFFERENT/MISSING/TRANSFORMED）+ 幂等重跑；关键字段正确率 100%（DIFFERENT=0） |
@@ -172,15 +178,15 @@ AI_MODEL=gpt-4o-mini
 
 **验收任务 B 预期结果**（DEMO 模式）：HardGate PASS → 评分 73.5（值得研究档）→ 评论缺口 + 反向审查 → 机会池 pending_review → UI 审批面板可批准 / 观察 / 拒绝，决策写入决策日志。
 
-## 8. 测试结果（2026-09-11 全量通过）
+## 8. 测试结果（2026-09-12 全量通过）
 
 ```
-npm run test → 31 项通过 / 0 失败（22 项 V2 + 9 项 V2.1 Red Team）
+npm run test → 37 项通过 / 0 失败（22 项 V2 + 9 项 V2.1 Red Team + 5 项 V2.2 HTTP Black Box + 1 容器）
 npx tsc --noEmit → 0 error
 ```
 
-覆盖：相对表现分级、HardGate 7 门、缺失数据不补 0、快照同日防覆盖、快照序列逐日写入（回归）、30 天窗口命中、证据引用完整性、状态机非法迁移拦截、审批落决策日志、拒绝保留现场、任务 A/B 整链路集成；V2.1 Red Team：REAL 禁 Mock fallback / Raw trace 穿透 / 未知列进 mapping_queue / 重复导入幂等 / 冲突并存 / 审批绕过 403 / HardGate 3 案例 / 恶意数据 / 关键字段映射正确率 100%。
+覆盖：相对表现分级、HardGate 7 门、缺失数据不补 0、快照同日防覆盖、快照序列逐日写入（回归）、30 天窗口命中、证据引用完整性、状态机非法迁移拦截、审批落决策日志、拒绝保留现场、任务 A/B 整链路集成；V2.1 Red Team：REAL 禁 Mock fallback / Raw trace 穿透 / 未知列进 mapping_queue / 重复导入幂等 / 冲突并存 / 审批绕过 403 / HardGate 3 案例 / 恶意数据 / 关键字段映射正确率 100%；V2.2 HTTP Black Box：REAL+Sentinel → Evidence 987654 / REAL 无 Provider → needs_data 且无 Mock / 非法 approve → 403 / 未知字段 → mapping_queue / Amazon 缺失字段 → null+missing（详见 `V2_2_BLACKBOX_TEST_REPORT.md`）。
 
 ***
 
-*本项目阶段：Architecture Prototype ✅ Complete · Real Data Integration 🚧 In Progress · Production Validation ⛔ Not Passed。真实数据接入（Amazon 官方凭据/报表、真实 4 SKU 录入）、运营 / 财务模块为后续输入项。*
+*本项目阶段：Architecture Prototype ✅ Complete · Real Data Integration 🚧 In Progress · Production Validation ⛔ Not Passed。真实数据接入（Amazon 官方凭据/报表、真实 4 SKU 录入、记忆棉真实文件）为后续输入项；V2.2 完成前 README 不标注 "Live Provider Connected"。*

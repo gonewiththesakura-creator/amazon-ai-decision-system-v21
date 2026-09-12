@@ -51,7 +51,7 @@ export class DataProviderRegistry {
       if (m === 'REAL' && p.isMock) continue;
       if (p.healthCheck().includes(capability)) return p;
     }
-    const usable = this.listStatus().filter((s) => s.status === 'Connected').map((s) => s.provider);
+    const usable = this.listStatus().filter((s) => s.status === 'CONNECTED').map((s) => s.provider);
     throw new NeedsDataError(
       [capability],
       usable.length ? usable : chain.filter((n) => this.providers.has(n)),
@@ -85,6 +85,42 @@ export class DataProviderRegistry {
       isMock: p.isMock,
       capabilities: p.healthCheck(),
     }));
+  }
+
+  /** V2.2 §15/§28：批量真实远程健康检查（唯一把状态推到 CONNECTED 的路径） */
+  async refreshAllHealth(concurrency = 4): Promise<Array<{ provider: string; status: ProviderConnectionStatus; latencyMs?: number }>> {
+    const providers = [...this.providers.values()];
+    const results: Array<{ provider: string; status: ProviderConnectionStatus; latencyMs?: number }> = [];
+    for (let i = 0; i < providers.length; i += concurrency) {
+      const batch = providers.slice(i, i + concurrency);
+      const settled = await Promise.allSettled(batch.map((p) => p.healthCheckRemote()));
+      settled.forEach((s, idx) => {
+        const p = batch[idx]!;
+        if (s.status === 'fulfilled') {
+          results.push({ provider: p.name, status: s.value.status, latencyMs: s.value.latencyMs });
+        } else {
+          results.push({ provider: p.name, status: 'ERROR', latencyMs: undefined });
+        }
+      });
+    }
+    this.syncStatusToDb();
+    return results;
+  }
+
+  /** 最近一次健康检查结果快照（UI/报告用） */
+  getHealthSnapshot(): Array<{ provider: string; status: ProviderConnectionStatus; checkedAt: string; latencyMs?: number; capabilities: Capability[]; errorCode?: string; errorMessage?: string }> {
+    return [...this.providers.values()].map((p) => {
+      const h = p.getLastHealth();
+      return {
+        provider: p.name,
+        status: h?.status ?? p.getStatus(),
+        checkedAt: h?.checkedAt ?? new Date(0).toISOString(),
+        latencyMs: h?.latencyMs,
+        capabilities: h?.capabilities ?? [],
+        errorCode: h?.errorCode,
+        errorMessage: h?.errorMessage,
+      };
+    });
   }
 
   /** 同步状态到 provider_status 表（UI/对账可查） */

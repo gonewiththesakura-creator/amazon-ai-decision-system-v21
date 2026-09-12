@@ -28,11 +28,13 @@ export interface SkuAgentData {
   percentile_review: number | null;
   competitor_changes: CompetitorChange[];
   missing: string[];
+  /** V2.2 §12：数据实际来源 Provider 名（Evidence source 必须真实） */
+  source?: string;
 }
 
 export function analyzeSku(data: SkuAgentData): AgentOutput {
   const evidence: AgentDraftEvidence[] = [];
-  const src = 'SellerSprite(Mock)';
+  const src = data.source ?? 'SellerSprite(Mock)';
   const collected = new Date().toISOString();
 
   const push = (claim: string, metric: string, value: number, calculation?: string) => {

@@ -386,7 +386,7 @@ api.post('/import/csv', (req, res) => {
     const adapter = new CsvImportAdapter(text, 'SellerSprite(Import)');
     const products = adapter.parseProducts();
     const normalized = products.map((p) => {
-      const r = normalizeProductData(p, { is_demo: true, entityType: 'product' });
+      const r = normalizeProductData(p, { is_demo: false, entityType: 'product' });
       return { asin: p.asin, product_id: r.productId, missing: r.missing.map((m) => m.field) };
     });
     res.json({ imported: normalized.length, failed: products.length - normalized.length, products: normalized });

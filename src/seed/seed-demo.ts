@@ -6,6 +6,7 @@ import { getDatabase } from '../db/connection.js';
 import { ensureDefaultProfiles } from '../modules/rules/profile.js';
 import { OWNED_SKU_PROFILES } from '../adapters/mock/mock-adapter.js';
 import { createResearchJob } from '../modules/research/job.js';
+import { upsertMarketNode } from '../modules/snapshots/engine.js';
 
 const now = () => new Date().toISOString();
 
@@ -15,10 +16,12 @@ export function seedOwnedProducts(): void {
   if (count > 0) return;
   const stmt = db.prepare(
     `INSERT INTO owned_products (sku, asin, internal_name, image_url, market_id, keywords, monitor_enabled, created_at, updated_at)
-     VALUES (?, ?, ?, ?, NULL, ?, 1, ?, ?)`
+     VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)`
   );
   for (const p of OWNED_SKU_PROFILES) {
-    stmt.run(p.sku, p.asin, p.internalName, null, `memory foam ${p.marketName.toLowerCase()}`, now(), now());
+    // V2.2 §44：真实 SKU 必须关联市场节点（市场名来自 SKU 画像，禁止 'Memory Foam Pillow' 兜底）
+    const marketId = upsertMarketNode({ name: p.marketName, marketplace: 'US', level: 2, source: 'seed-owned' });
+    stmt.run(p.sku, p.asin, p.internalName, null, marketId, `memory foam ${p.marketName.toLowerCase()}`, now(), now());
   }
 }
 
