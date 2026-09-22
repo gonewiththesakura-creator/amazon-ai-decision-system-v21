@@ -127,6 +127,7 @@ export function normalizeProductData(raw: RawProductData, opts: NormalizeOptions
     image_url: raw.image_url,
     marketplace: 'US',
     market_id: marketId,
+    source: raw.source,
   });
 
   if (opts.persist_snapshots !== false) {

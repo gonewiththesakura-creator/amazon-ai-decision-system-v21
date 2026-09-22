@@ -20,9 +20,10 @@
 | market_research("Pillows") | 命中 **Bed Pillows** 类目（nodeIdPath `1055398:1063252:1199122:10671043011`），totalProducts=3029、brands=71、avgPrice=45.08、avgRating=4.3；另命中 Neck & Cervical Pillows（3290 商品/55 品牌/37.44） |
 | market_research_statistics | 类目头部 Listing 真实返回（returnFields asin/title/price/totalUnits/totalAmount/rating/reviews/brand/bsr） |
 | asin_detail | 真实标题/价格/评分/评论数（竞品 top10 逐条取回，入库 products #442-#449：Utopia Bedding、Coop Home Goods、JOLLYVOGUE、QUTOOL、Nuzzle、Sasttie 等） |
-| review | 10 竞品 × 40 条真实评论，**200 条入库**（content/star/date 毫秒时间戳），2026-09-22 02:48 采集 |
+| review | 10 竞品 × 40 条真实评论，**400 条入库**（content/star/date 毫秒时间戳），2026-09-22 采集 |
 | keyword_miner("memory foam pillow") | total=9495，真实搜索量/竞价/商品数（当日早些时候已验证；本轮以市场/评论验收为主） |
 | 真实快照 | market_snapshots 新增 is_demo=0 快照（source_metadata.source=sellersprite_mcp）；历史 demo 快照保留不混入 |
+| products Lineage 修复 | 发现 upsertProduct 不写 source（列默认 'import'）→ MCP 竞品行来源被误标 import；已修：upsertProduct 支持 source 参数 + normalizeProductData 透传 raw.source，存量 10 个竞品行修正为 `sellersprite_mcp`（pid 440-449，各挂 40 条真实评论） |
 
 ## 3. 5 个真实 SKU 录入（2026-09-22）
 

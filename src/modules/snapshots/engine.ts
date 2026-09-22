@@ -125,6 +125,7 @@ export function upsertProduct(params: {
   market_id?: number | null;
   is_owned?: boolean;
   owned_sku_id?: number | null;
+  source?: string;
 }): number {
   const db = getDatabase();
   const existing = db.prepare('SELECT id FROM products WHERE asin = ?').get(params.asin) as
@@ -133,14 +134,15 @@ export function upsertProduct(params: {
   if (existing) {
     db.prepare(
       `UPDATE products SET brand = COALESCE(?, brand), title = ?, image_url = COALESCE(?, image_url),
-       market_id = COALESCE(?, market_id), is_owned = ?, owned_sku_id = COALESCE(?, owned_sku_id) WHERE id = ?`
-    ).run(params.brand ?? null, params.title, params.image_url ?? null, params.market_id ?? null, params.is_owned ? 1 : 0, params.owned_sku_id ?? null, existing.id);
+       market_id = COALESCE(?, market_id), is_owned = ?, owned_sku_id = COALESCE(?, owned_sku_id),
+       source = COALESCE(?, source) WHERE id = ?`
+    ).run(params.brand ?? null, params.title, params.image_url ?? null, params.market_id ?? null, params.is_owned ? 1 : 0, params.owned_sku_id ?? null, params.source ?? null, existing.id);
     return existing.id;
   }
   const res = db
     .prepare(
-      `INSERT INTO products (asin, brand, title, image_url, marketplace, market_id, is_owned, owned_sku_id, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO products (asin, brand, title, image_url, marketplace, market_id, is_owned, owned_sku_id, source, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       params.asin,
@@ -151,6 +153,7 @@ export function upsertProduct(params: {
       params.market_id ?? null,
       params.is_owned ? 1 : 0,
       params.owned_sku_id ?? null,
+      params.source ?? 'import',
       new Date().toISOString()
     );
   return Number(res.lastInsertRowid);
