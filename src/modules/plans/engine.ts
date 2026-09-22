@@ -30,6 +30,13 @@ export function buildDataPlan(jobId: number, jobType: string): DataPlan {
   const plan = providerRegistry.planCapabilities(def.required, mode);
   const providers: Record<string, string> = {};
   for (const [c, p] of plan.resolved) providers[c] = p.name;
+  // V2.2：optional 能力若能解析真实 Provider，一并纳入（REAL 下不 Mock；解析失败不算 missing）
+  if (def.optional.length > 0) {
+    const optPlan = providerRegistry.planCapabilities(def.optional, mode);
+    for (const [c, p] of optPlan.resolved) {
+      if (!providers[c]) providers[c] = p.name;
+    }
+  }
   const now = new Date().toISOString();
   const ins = db
     .prepare(

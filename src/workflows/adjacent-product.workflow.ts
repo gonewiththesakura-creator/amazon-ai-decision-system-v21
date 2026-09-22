@@ -80,7 +80,7 @@ export async function runAdjacentProductWorkflow(jobId: number, ctx: WorkflowDat
   const reviewCtx = ctx.providers['review_text'] ?? null;
   const marketProvider = getCapabilityProvider<MarketResearchProvider>(ctx, 'market_size');
   const topProductsProvider = getCapabilityProvider<MarketResearchProvider>(ctx, 'top_products');
-  const reviewProvider = reviewCtx ? (reviewCtx.impl as MarketResearchProvider) : null;
+  const reviewProvider = reviewCtx && typeof (reviewCtx.impl as MarketResearchProvider).getReviews === 'function' ? (reviewCtx.impl as MarketResearchProvider) : null;
   const isDemo = marketCtx.isMock;
 
   try {

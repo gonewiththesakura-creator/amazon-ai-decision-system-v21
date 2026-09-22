@@ -2,7 +2,7 @@
 
 - 项目：Amazon AI 决策系统（amazon-ai-decision-system-v21 代码线）
 - 版本：V2.2 "Live Provider Execution"（指令 §0-§36 / §58-§59）
-- 报告时间：2026-09-12
+- 报告时间：2026-09-12（初版）/ **2026-09-22（真实凭据验收更新）**
 - 验证基线：`npx tsc --noEmit` 0 错误；`npm run test` 37/37 全绿（31 项 V2.1 回归 + 5 项 V2.2 HTTP Black Box + 1 容器）
 
 ## 1. 核心改造：Provider Resolution 成为 Workflow 唯一入口（§4-§6 / §34）
@@ -21,26 +21,26 @@
 - **Connected 的唯一达成路径 = 真实 `healthCheckRemote()` 执行成功**（`base-unavailable.ts`：先查配置→再调 verifyRemote→错误映射 AUTH→UNAUTHORIZED / RATE_LIMIT→RATE_LIMITED）
 - `registry.refreshAllHealth(concurrency=4)` 启动时异步执行，不阻塞启动；新增 `POST /api/providers/health/refresh`
 
-### 2.1 真实 8 态快照（2026-09-12，无真实凭据环境）
+### 2.1 真实 8 态快照（2026-09-22，SellerSprite 远程 MCP 已配置并真实验证）
 
 | Provider | 状态 | 能力 | 说明 |
 |---|---|---|---|
-| sellersprite_mcp | UNCONFIGURED | - | 缺 `SELLERSPRITE_MCP_ENABLED/SERVER`（真调用能力就绪，未配置不假装 Connected） |
+| sellersprite_mcp | **CONNECTED** | market_size/market_growth/top_products/estimated_sales/keyword_volume/review_text/search_terms | 远程 Streamable HTTP（`SELLERSPRITE_MCP_URL`+`SECRET`），initialize 握手 + **工具 7/7 实测匹配**（market_research/asin_detail/review/keyword_miner/competitor_lookup/market_research_statistics/market_product_demand_trend）；Connected 唯一来源 = 真实 healthCheckRemote |
 | sellersprite_api | UNCONFIGURED | - | 缺 `SELLERSPRITE_API_KEY` |
 | sellersprite_import | **CONNECTED** | keyword_volume/top_products/market_size/market_growth/review_text | 存在真实 ReverseASIN 导入记录（healthCheckRemote=真实导入记录） |
 | amazon_spapi | UNCONFIGURED | - | 缺 SP-API 三凭据 |
 | amazon_ads | UNCONFIGURED | - | 缺 Ads 四凭据 |
 | amazon_import | UNCONFIGURED | - | 尚未导入 Amazon 报表文件 |
 | mock | CONNECTED | 全能力 | isMock=true；REAL 模式永不被解析 |
-| manual | CONNECTED | supply_chain/product_fees/review_text | 人工录入通道就绪 |
+| manual | CONNECTED | supply_chain/product_fees/review_text | 人工录入通道就绪（无 getReviews 自动实现，按方法级降级） |
 
-> 关键语义：**填 env 不再等于 Connected**——sellersprite_mcp/api 在缺凭据时明确 UNCONFIGURED；amazon_import 无导入记录即 UNCONFIGURED（§62 第 3 条反例已杜绝）。
+> 关键语义：**填 env 不再等于 Connected**——sellersprite_mcp 经真实握手+工具发现才 CONNECTED；sellersprite_api 在缺凭据时明确 UNCONFIGURED；amazon_import 无导入记录即 UNCONFIGURED（§62 第 3 条反例已杜绝）。
 
 ## 3. 真实 Provider 实现（§16-§24）
 
 | Provider | 实现要点 |
 |---|---|
-| **SellerSprite MCP**（`sellersprite-mcp.ts` + `sellersprite/mcp-client.ts`） | stdio 子进程 JSON-RPC 2.0：connect（initialize 握手）/listTools/callTool（timeout+retry+错误映射）；工具名可经 `SELLERSPRITE_MCP_TOOL_*` 覆盖（§18）；verifyRemote = MCP 握手 + 工具发现（§40）；结果宽松 schema 校验 → Raw Store（§19/§39） |
+| **SellerSprite MCP**（`sellersprite-mcp.ts` + `sellersprite/mcp-client.ts`） | 双传输：stdio（`SELLERSPRITE_MCP_SERVER`）与远程 Streamable HTTP（`SELLERSPRITE_MCP_URL`+`SECRET`，2026-09 实测网关）；远程认证 = header `secret-key`（非 Bearer/query）、`Accept: application/json, text/event-stream`、协议 2025-03-26、通知不带 id、JSON-RPC 取 `result` 字段；工具名默认 = 实测真实名（market_research/asin_detail/review/keyword_miner/competitor_lookup/market_research_statistics/market_product_demand_trend），可经 `SELLERSPRITE_MCP_TOOL_*` 覆盖（§18）；verifyRemote = MCP 握手 + 工具发现（§40）；结果解包 `{code,data}` → 宽松 schema 校验 → Raw（§19/§39） |
 | **SellerSprite API**（`sellersprite-api.ts`） | 真实 HTTP 客户端（X-Api-Key/Bearer、baseURL、retry、超时）；verifyRemote = 带认证请求 /v2/projects；endpoint 可经 `SELLERSPRITE_API_ENDPOINT_*` 覆盖（§21） |
 | **Amazon SP-API**（`amazon-spapi.ts`） | LWA refreshAccessToken（form-urlencoded、缓存至过期）+ spGet（x-amz-access-token/marketplace-id）；verifyRemote = Orders 轻量查询（§23 第一真实调用）；getOrders/getOwnedProducts/getInventory/getListingStatus/getProductFees 真端点 |
 | **Amazon Ads**（`amazon-ads.ts`） | 独立 LWA；verifyRemote = profiles 查询；getCampaigns/getKeywords/getSearchTerms 真端点 |
@@ -64,7 +64,7 @@
 |---|---|---|
 | Workflow 不再 getAdapter('mock') | **PASS** | 4 条 Workflow 重写为 (jobId, ctx) 按能力取 Provider；审计报告全量命中已清零 |
 | REAL Workflow 无硬编码 is_demo=true | **PASS** | is_demo 由 Provider isMock 决定；routes.ts:389 已改 false |
-| SellerSprite MCP 真调用 | **PASS（就绪，凭据待提供）** | stdio JSON-RPC client + 握手/工具发现/调用；无凭据如实 UNCONFIGURED |
+| SellerSprite MCP 真调用 | **PASS** | 远程网关真实连接（CONNECTED + 工具 7/7）；market_research/asin_detail/review/keyword_miner 全部真实返回（类目 3029 商品/71 品牌、竞品 10 条、评论 200 条，详见 V2_2_REAL_MEMORY_FOAM_DATA_REPORT.md） |
 | SellerSprite API 真调用 | **PASS（就绪，凭据待提供）** | 真实 HTTP 客户端 + 认证请求 health check |
 | SP-API 真 Health Check | **PASS（就绪，凭据待提供）** | LWA 刷新 + Orders 真实查询 = Connected 唯一路径 |
 | Ads 真 Health Check | **PASS（就绪，凭据待提供）** | LWA + profiles 查询 = Connected 唯一路径 |
@@ -73,10 +73,10 @@
 | Amazon missing 不补0 | **PASS** | importReport 保留 null + missing_data_items；Black Box Case E 通过 |
 | Amazon hash 真 SHA256 | **PASS** | createHash('sha256') + readFileSync 内容哈希（非 Date.now 假 hash） |
 | HTTP Black Box | **PASS** | tests/v22/blackbox.test.ts 5/5（详见 V2_2_BLACKBOX_TEST_REPORT.md） |
-| 记忆棉真实数据 | **FAIL（待提供）** | 见 V2_2_REAL_MEMORY_FOAM_DATA_REPORT.md（假发文件只证明管线，不得冒充验收） |
-| 4真实SKU | **FAIL（待提供）** | 见 V2_2_REAL_MEMORY_FOAM_DATA_REPORT.md（当前为演示 SKU） |
-| 灰色枕真实诊断 | **FAIL（待提供）** | 依赖上两项真实数据 |
+| 记忆棉真实数据 | **PASS（MCP 实时）** | SellerSprite 远程 MCP 真实调用：类目/竞品/评论/关键词全部真实入库（见 V2_2_REAL_MEMORY_FOAM_DATA_REPORT.md） |
+| 真实 SKU 录入 | **PASS** | 5 个真实 SKU（US/ATVPDKIKX0DER）已录入 owned_products #5-#9，字段齐备（见 V2_2_REAL_MEMORY_FOAM_DATA_REPORT.md） |
+| 灰色枕真实诊断 | **部分（owned_orders 待提供）** | 真实市场/竞品/评论洞察已完成（evidence source=sellersprite_mcp）；owned_orders 缺 Amazon SP-API 凭据 → job 如实 needs_data（capability:owned_orders） |
 
 ## 7. 结论
 
-V2.2 代码改造（Provider Resolution 唯一入口 / 8 态健康检查 / 真实客户端 / Import 修复 / Sentinel / Black Box）**全部完成并全绿**；凭据与真实记忆棉数据相关验收项按 §62 如实标 FAIL/待提供，未以假发数据冒充。
+V2.2 代码改造（Provider Resolution 唯一入口 / 8 态健康检查 / 真实客户端 / Import 修复 / Sentinel / Black Box）**全部完成并全绿**；2026-09-22 用户补交 SellerSprite 远程 MCP 凭据与 5 个真实 SKU 后，**MCP 真调用与真实记忆棉数据验收项已解除 FAIL**；剩余 Amazon SP-API/Ads 凭据仍按 §62 如实标 FAIL/待提供（owned_orders 维度）。
